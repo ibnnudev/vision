@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Vision Demo</title>
+<style>
+body{font-family:Inter,system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:24px;background:#f6f8fa;color:#1f2328}
+h1{margin:0 0 4px;color:#0d1117}.sub{color:#656d76;margin-bottom:24px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.card{background:#fff;border:1px solid #d0d7de;border-radius:12px;padding:20px}
+.card h2{font-size:16px;margin:0 0 12px;color:#0d1117}
+label{display:block;font-size:13px;font-weight:600;margin:10px 0 4px}
+input,textarea{width:100%;padding:8px 12px;border:1px solid #d0d7de;border-radius:6px;font-family:inherit;font-size:14px;box-sizing:border-box}
+textarea{min-height:70px;resize:vertical}
+.drop{border:2px dashed #d0d7de;border-radius:8px;padding:24px;text-align:center;color:#656d76;cursor:pointer;transition:all .2s;background:#fafbfc}
+.drop:hover,.drop.active{border-color:#0969da;background:#f0f7ff}
+.drop input{display:none}
+.preview{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px;margin-top:10px}
+.preview img{width:100%;border-radius:6px;border:1px solid #d0d7de}
+button{background:#1f883d;color:#fff;border:none;padding:10px 20px;border-radius:6px;font-weight:600;font-size:14px;cursor:pointer;margin-top:14px;width:100%}
+button:hover{background:#1a7f37}
+button.secondary{background:#0969da}button.secondary:hover{background:#0860ca}
+.result{margin-top:14px;padding:14px;border-radius:8px;font-size:12px;line-height:1.5;display:none;font-family:Menlo,monospace;white-space:pre-wrap;word-break:break-word}
+.result.show{display:block}
+.result.SAFE{background:#dafbe1;border:1px solid #1f883d;color:#1a7f37}
+.result.SUSPICIOUS{background:#fff8c5;border:1px solid #bf8700;color:#7d4e00}
+.result.FLAGGED_HIGH_RISK{background:#ffebe9;border:1px solid #cf222e;color:#a40e26}
+</style></head><body>
+<h1>&#x1F6E1;&#xFE0F; Vision Demo</h1>
+<p class="sub">Upload foto asli &rarr; test deteksi penipuan segitiga (Triangle Fraud)</p>
+<div class="grid">
+  <div class="card">
+    <h2>&#x1F4CC; Langkah 1: Daftarkan Foto Asli</h2>
+    <label>Listing ID</label><input id="s_id" value="OLX-REAL-001">
+    <label>Model</label><input id="s_model" value="Honda Brio 2021">
+    <label>Harga Pasar (Rp)</label><input id="s_price" type="number" value="175000000">
+    <label>Foto Asli</label>
+    <div class="drop" id="s_drop"><input type="file" id="s_file" accept="image/*"><div>&#x1F4F7; Klik atau drag foto di sini</div></div>
+    <div class="preview" id="s_prev"></div>
+    <button class="secondary" onclick="seedSubmit()">Daftarkan Original</button>
+    <div class="result" id="s_res"></div>
+  </div>
+  <div class="card">
+    <h2>&#x1F9EA; Langkah 2: Test Iklan Mencurigakan</h2>
+    <label>User ID</label><input id="t_user" value="USR-DEMO">
+    <label>Judul</label><input id="t_title" value="Honda Brio 2021">
+    <label>Harga Iklan</label><input id="t_price" type="number" value="85000000">
+    <label>Deskripsi</label>
+    <textarea id="t_desc">Jual cepat. Jangan bahas harga sama orang rumah ya, bilang aja saudara.</textarea>
+    <label>Foto Listing (bisa multiple)</label>
+    <div class="drop" id="t_drop"><input type="file" id="t_file" accept="image/*" multiple><div>&#x1F4F7; Klik atau drag foto</div></div>
+    <div class="preview" id="t_prev"></div>
+    <button onclick="testSubmit()">Deteksi Fraud</button>
+    <div class="result" id="t_res"></div>
+  </div>
+</div>
+<script>
+function setupDrop(did,iid,pid){const d=document.getElementById(did),i=document.getElementById(iid),p=document.getElementById(pid);
+d.onclick=()=>i.click();d.ondragover=e=>{e.preventDefault();d.classList.add('active')};
+d.ondragleave=()=>d.classList.remove('active');
+d.ondrop=e=>{e.preventDefault();d.classList.remove('active');i.files=e.dataTransfer.files;render(i,p)};
+i.onchange=()=>render(i,p)}
+function render(i,p){p.innerHTML='';[...i.files].slice(0,6).forEach(f=>{const im=document.createElement('img');im.src=URL.createObjectURL(f);p.appendChild(im)})}
+setupDrop('s_drop','s_file','s_prev');setupDrop('t_drop','t_file','t_prev');
+async function seedSubmit(){const f=document.getElementById('s_file').files[0];if(!f)return alert('Pilih foto!');
+const fd=new FormData();fd.append('listing_id',s_id.value);fd.append('model',s_model.value);
+fd.append('price',s_price.value);fd.append('image',f);
+const r=await fetch('/api/v1/upload/seed',{method:'POST',body:fd});const j=await r.json();
+const b=document.getElementById('s_res');b.className='result SAFE show';b.textContent='\u2705 BERHASIL DAFTAR\n'+JSON.stringify(j,null,2)}
+async function testSubmit(){const files=document.getElementById('t_file').files;if(!files.length)return alert('Pilih foto!');
+const fd=new FormData();fd.append('user_id',t_user.value);fd.append('listing_title',t_title.value);
+fd.append('price',t_price.value);fd.append('description',t_desc.value);
+[...files].forEach(f=>fd.append('images',f));
+const r=await fetch('/api/v1/upload/detect',{method:'POST',body:fd});const j=await r.json();
+const b=document.getElementById('t_res');b.className='result '+j.status+' show';
+b.textContent=`Status: ${j.status}\nScore: ${j.fraud_score}/120\nAction: ${j.action_taken}\n\n${JSON.stringify(j.analysis_details,null,2)}`}
+</script></body></html>
