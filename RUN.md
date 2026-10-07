@@ -3,11 +3,6 @@
 Panduan ini menggunakan virtual environment yang sudah tersedia di folder `env/`.
 
 ## 1. Masuk ke folder project
-
-```bash
-cd /Users/ibnnu/work/vision
-```
-
 ## 2. Aktifkan virtual environment
 
 macOS/Linux:
