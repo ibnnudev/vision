@@ -95,7 +95,8 @@ def seed_original(req: SeedRequest):
     hashes = compute_hashes(img)
     count = add_original(req.listing_id, req.model, req.price,
                          json.dumps(hashes["phash"]), json.dumps(hashes["dhash"]),
-                         json.dumps(hashes["whash"]))
+                         json.dumps(hashes["whash"]),
+                         base64.b64decode(req.image_base_64.split(",", 1)[-1]))
     return {"seeded": req.listing_id, "hashes": hashes, "total_registry": count}
 
 async def _run_fraud_detect(req, req_id="internal"):
@@ -148,7 +149,7 @@ async def upload_seed(listing_id: str = Form(...), model: str = Form(...),
     hashes = compute_hashes(img)
     count = add_original(listing_id, model, price,
                          json.dumps(hashes["phash"]), json.dumps(hashes["dhash"]),
-                         json.dumps(hashes["whash"]))
+                         json.dumps(hashes["whash"]), raw)
     return {"seeded": listing_id, "hashes": hashes, "total_registry": count}
 
 @app.post("/api/v1/upload/detect")

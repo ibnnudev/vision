@@ -85,6 +85,7 @@ REQUIRED_PACKAGES = [
     ("imagehash", "imagehash"),
     ("multipart", "python-multipart"),
     ("rapidfuzz", "rapidfuzz"),
+    ("cv2", "opencv-python-headless"),
     ("requests", "requests"),
 ]
 
@@ -145,6 +146,9 @@ CONFIG_PY = '''import os
 
 class Settings:
     HAMMING_THRESHOLD     = int(os.getenv("VISION_HAMMING_THRESHOLD", "10"))
+    IMAGE_MATCH_MARGIN    = int(os.getenv("VISION_IMAGE_MATCH_MARGIN", "6"))
+    SIFT_MIN_INLIERS      = int(os.getenv("VISION_SIFT_MIN_INLIERS", "8"))
+    SIFT_RATIO            = float(os.getenv("VISION_SIFT_RATIO", "0.75"))
     PRICE_DROP_THRESHOLD  = float(os.getenv("VISION_PRICE_DROP", "40.0"))
     W_IMAGE = 40
     W_PRICE = 40
@@ -198,6 +202,7 @@ def init_db():
             listing_id TEXT PRIMARY KEY, model TEXT NOT NULL,
             price INTEGER NOT NULL, phash TEXT NOT NULL,
             dhash TEXT NOT NULL, whash TEXT NOT NULL,
+            image_blob BLOB,
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -209,15 +214,19 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_audit_status ON audit_log(status);
         """)
+        columns = {row[1] for row in c.execute("PRAGMA table_info(original_registry)")}
+        if "image_blob" not in columns:
+            c.execute("ALTER TABLE original_registry ADD COLUMN image_blob BLOB")
         c.commit(); c.close()
 
-def add_original(listing_id, model, price, phash_hex, dhash_hex, whash_hex):
+def add_original(listing_id, model, price, phash_hex, dhash_hex, whash_hex, image_blob=None):
     with _lock:
         c = _conn()
         c.execute("""INSERT OR REPLACE INTO original_registry
-            (listing_id, model, price, phash, dhash, whash, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (listing_id, model, price, phash, dhash, whash, image_blob, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (listing_id, model, price, phash_hex, dhash_hex, whash_hex,
+             image_blob,
              datetime.now(timezone.utc).isoformat()))
         c.commit()
         count = c.execute("SELECT COUNT(*) FROM original_registry").fetchone()[0]
@@ -326,6 +335,8 @@ LAYERS_PY = '''import io, base64, json
 from typing import List, Dict, Optional, Tuple
 from PIL import Image
 import imagehash
+import cv2
+import numpy as np
 from rapidfuzz import fuzz
 from config import settings, MARKET_PRICE_DB, TIER1_PATTERNS
 from database import get_all_originals
@@ -336,8 +347,20 @@ def b64_to_image(b64: str) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
 
 def compute_hashes(img: Image.Image) -> Dict[str, list]:
+    """Hash overlapping regions so crops and partial overlays retain evidence."""
     w, h = img.size
-    variants = [img, img.crop((int(w*0.05), int(h*0.05), int(w*0.95), int(h*0.95)))]
+    variants = [img]
+    seen = {(0, 0, w, h)}
+    for scale in (0.9, 0.75, 0.6, 0.45):
+        cw, ch = max(32, int(w * scale)), max(32, int(h * scale))
+        for row in range(3):
+            for col in range(3):
+                left = int((w - cw) * col / 2)
+                top = int((h - ch) * row / 2)
+                box = (left, top, left + cw, top + ch)
+                if box not in seen:
+                    seen.add(box)
+                    variants.append(img.crop(box))
     hashes = {"phash": [], "dhash": [], "whash": []}
     for v in variants:
         hashes["phash"].append(str(imagehash.phash(v, hash_size=8)))
@@ -354,6 +377,41 @@ def _parse_stored(raw):
         p = json.loads(raw); return p if isinstance(p, list) else [p]
     except: return [raw]
 
+def _match_distances(query_hashes, original):
+    """Return cross-region distances, supporting old and new registry rows."""
+    distances = []
+    for name in ("phash", "dhash", "whash"):
+        candidates = query_hashes[name]
+        stored = _parse_stored(original[name])
+        distances.append(min(hamming_hex(c, o) for c in candidates for o in stored))
+    return distances
+
+def _sift_match(query: Image.Image, original_blob):
+    """SIFT descriptors + RANSAC homography for crop/overlay-resistant matches."""
+    if not original_blob:
+        return {"verified": False, "good_matches": 0, "inliers": 0}
+    query_array = cv2.cvtColor(np.array(query), cv2.COLOR_RGB2GRAY)
+    original_array = cv2.imdecode(np.frombuffer(original_blob, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if original_array is None:
+        return {"verified": False, "good_matches": 0, "inliers": 0}
+    sift = cv2.SIFT_create(nfeatures=1200)
+    key_query, desc_query = sift.detectAndCompute(query_array, None)
+    key_original, desc_original = sift.detectAndCompute(original_array, None)
+    if desc_query is None or desc_original is None:
+        return {"verified": False, "good_matches": 0, "inliers": 0}
+    matcher = cv2.BFMatcher(cv2.NORM_L2)
+    pairs = matcher.knnMatch(desc_query, desc_original, k=2)
+    good = [first for first, second in pairs
+            if first.distance < settings.SIFT_RATIO * second.distance]
+    if len(good) < settings.SIFT_MIN_INLIERS:
+        return {"verified": False, "good_matches": len(good), "inliers": 0}
+    source = np.float32([key_query[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+    target = np.float32([key_original[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+    _, mask = cv2.findHomography(source, target, cv2.RANSAC, 5.0)
+    inliers = int(mask.sum()) if mask is not None else 0
+    return {"verified": inliers >= settings.SIFT_MIN_INLIERS,
+            "good_matches": len(good), "inliers": inliers}
+
 def layer1_image(image_b64_list):
     if not image_b64_list:
         return {"is_duplicate": False, "score": 0, "reason": "no_image", "images_analyzed": 0}
@@ -368,21 +426,33 @@ def layer1_image(image_b64_list):
             image_results.append({"idx": idx, "error": str(e)}); continue
         per_image_best = None
         for orig in originals:
-            op_list = _parse_stored(orig["phash"])
-            od_list = _parse_stored(orig["dhash"])
-            ow_list = _parse_stored(orig["whash"])
-            dp = min(hamming_hex(c, o) for c in hashes["phash"] for o in op_list)
-            dd = min(hamming_hex(c, o) for c in hashes["dhash"] for o in od_list)
-            dw = min(hamming_hex(c, o) for c in hashes["whash"] for o in ow_list)
-            ed = min(dp, dd, dw)
-            if per_image_best is None or ed < per_image_best["ensemble_dist"]:
+            dp, dd, dw = _match_distances(hashes, orig)
+            feature_match = _sift_match(img, orig.get("image_blob"))
+            ed = (dp + dd + dw) / 3
+            support = sum(
+                distance <= settings.HAMMING_THRESHOLD + settings.IMAGE_MATCH_MARGIN
+                for distance in (dp, dd, dw)
+            )
+            if (per_image_best is None
+                    or feature_match["verified"] and not per_image_best["feature_match"]["verified"]
+                    or (feature_match["verified"] == per_image_best["feature_match"]["verified"]
+                        and ed < per_image_best["ensemble_dist"])):
                 per_image_best = {"idx": idx, "matched_listing_id": orig["listing_id"],
                                    "matched_model": orig["model"], "pHash_dist": dp,
-                                   "dHash_dist": dd, "wHash_dist": dw, "ensemble_dist": ed}
+                                   "dHash_dist": dd, "wHash_dist": dw,
+                                   "ensemble_dist": round(ed, 2),
+                                   "matched_variant_support": support,
+                                   "feature_match": feature_match}
+        if per_image_best and per_image_best["feature_match"]["verified"]:
+            per_image_best["ensemble_dist"] = 0
         image_results.append(per_image_best or {"idx": idx, "error": "no_match"})
         if per_image_best and (best_match is None or per_image_best["ensemble_dist"] < best_match["ensemble_dist"]):
             best_match = per_image_best
-    if best_match and best_match["ensemble_dist"] <= settings.HAMMING_THRESHOLD:
+    match_limit = settings.HAMMING_THRESHOLD + settings.IMAGE_MATCH_MARGIN
+    if (best_match and (
+            best_match["feature_match"]["verified"]
+            or (best_match["ensemble_dist"] <= match_limit
+                and best_match["matched_variant_support"] >= 2))):
         conf = max(0, (1 - best_match["ensemble_dist"]/64)) * 100
         return {"is_duplicate": True, "score": settings.W_IMAGE,
                 "matched_listing_id": best_match["matched_listing_id"],
@@ -390,6 +460,10 @@ def layer1_image(image_b64_list):
                 "hamming_distance": best_match["ensemble_dist"],
                 "pHash_dist": best_match["pHash_dist"], "dHash_dist": best_match["dHash_dist"],
                 "wHash_dist": best_match["wHash_dist"],
+                "matched_variant_support": best_match["matched_variant_support"],
+                "match_strategy": ("sift_ransac" if best_match["feature_match"]["verified"]
+                                   else "multi_region_ensemble"),
+                "feature_match": best_match["feature_match"],
                 "match_confidence": f"{conf:.1f}%", "images_analyzed": len(image_results)}
     return {"is_duplicate": False, "score": 0,
             "closest_hamming_distance": best_match["ensemble_dist"] if best_match else None,
@@ -518,7 +592,8 @@ def seed_original(req: SeedRequest):
     hashes = compute_hashes(img)
     count = add_original(req.listing_id, req.model, req.price,
                          json.dumps(hashes["phash"]), json.dumps(hashes["dhash"]),
-                         json.dumps(hashes["whash"]))
+                         json.dumps(hashes["whash"]),
+                         base64.b64decode(req.image_base_64.split(",", 1)[-1]))
     return {"seeded": req.listing_id, "hashes": hashes, "total_registry": count}
 
 async def _run_fraud_detect(req, req_id="internal"):
@@ -571,7 +646,7 @@ async def upload_seed(listing_id: str = Form(...), model: str = Form(...),
     hashes = compute_hashes(img)
     count = add_original(listing_id, model, price,
                          json.dumps(hashes["phash"]), json.dumps(hashes["dhash"]),
-                         json.dumps(hashes["whash"]))
+                         json.dumps(hashes["whash"]), raw)
     return {"seeded": listing_id, "hashes": hashes, "total_registry": count}
 
 @app.post("/api/v1/upload/detect")

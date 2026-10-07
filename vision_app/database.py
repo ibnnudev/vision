@@ -18,6 +18,7 @@ def init_db():
             listing_id TEXT PRIMARY KEY, model TEXT NOT NULL,
             price INTEGER NOT NULL, phash TEXT NOT NULL,
             dhash TEXT NOT NULL, whash TEXT NOT NULL,
+            image_blob BLOB,
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS audit_log (
@@ -29,15 +30,19 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_audit_status ON audit_log(status);
         """)
+        columns = {row[1] for row in c.execute("PRAGMA table_info(original_registry)")}
+        if "image_blob" not in columns:
+            c.execute("ALTER TABLE original_registry ADD COLUMN image_blob BLOB")
         c.commit(); c.close()
 
-def add_original(listing_id, model, price, phash_hex, dhash_hex, whash_hex):
+def add_original(listing_id, model, price, phash_hex, dhash_hex, whash_hex, image_blob=None):
     with _lock:
         c = _conn()
         c.execute("""INSERT OR REPLACE INTO original_registry
-            (listing_id, model, price, phash, dhash, whash, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (listing_id, model, price, phash, dhash, whash, image_blob, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (listing_id, model, price, phash_hex, dhash_hex, whash_hex,
+             image_blob,
              datetime.now(timezone.utc).isoformat()))
         c.commit()
         count = c.execute("SELECT COUNT(*) FROM original_registry").fetchone()[0]

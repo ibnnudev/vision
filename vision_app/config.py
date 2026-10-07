@@ -2,6 +2,9 @@ import os
 
 class Settings:
     HAMMING_THRESHOLD     = int(os.getenv("VISION_HAMMING_THRESHOLD", "10"))
+    IMAGE_MATCH_MARGIN    = int(os.getenv("VISION_IMAGE_MATCH_MARGIN", "6"))
+    SIFT_MIN_INLIERS      = int(os.getenv("VISION_SIFT_MIN_INLIERS", "8"))
+    SIFT_RATIO            = float(os.getenv("VISION_SIFT_RATIO", "0.75"))
     PRICE_DROP_THRESHOLD  = float(os.getenv("VISION_PRICE_DROP", "40.0"))
     W_IMAGE = 40
     W_PRICE = 40
