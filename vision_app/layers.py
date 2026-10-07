@@ -18,8 +18,6 @@ def compute_hashes(img: Image.Image) -> Dict[str, list]:
     w, h = img.size
     variants = [img]
     seen = {(0, 0, w, h)}
-    # A 3x3 set of overlapping windows at several scales catches arbitrary
-    # crops while keeping enough unaffected regions when an image is overlaid.
     for scale in (0.9, 0.75, 0.6, 0.45):
         cw, ch = max(32, int(w * scale)), max(32, int(h * scale))
         for row in range(3):

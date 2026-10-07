@@ -7,6 +7,22 @@ import requests
 
 BASE = "http://127.0.0.1:8000"
 
+def request_json(method, url, **kwargs):
+    response = requests.request(method, url, **kwargs)
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        body = response.text.strip().replace("\n", " ")[:500]
+        raise RuntimeError(
+            f"{method} {url} returned HTTP {response.status_code} "
+            f"with non-JSON response: {body!r}"
+        ) from exc
+    if not response.ok:
+        raise RuntimeError(
+            f"{method} {url} returned HTTP {response.status_code}: {payload}"
+        )
+    return payload
+
 # ---------- GENERATORS ----------
 def make_car(seed, size=(400, 300)):
     rng = np.random.default_rng(seed)
@@ -94,13 +110,13 @@ time.sleep(1)
 
 # Register ONLY BRIO
 print("\n  [2/5] Registering ONLY BRIO as protected...")
-r = requests.post(f"{BASE}/api/v1/seed-original", json={
+seed_result = request_json("POST", f"{BASE}/api/v1/seed-original", json={
     "listing_id": "OLX-PROTECTED-BRIO-001",
     "model": "Honda Brio 2021",
     "price": 175_000_000,
     "image_base_64": to_b64(BASE_BRIO),
 })
-print(f"      Registry: {r.json()['total_registry']} original(s)")
+print(f"      Registry: {seed_result['total_registry']} original(s)")
 
 # ---------- BUILD TEST CASES ----------
 print("\n  [3/5] Building test cases...")
@@ -145,11 +161,10 @@ t0 = time.time()
 for i, c in enumerate(cases):
     try:
         img = transform(c["base"], c["tk"])
-        r = requests.post(f"{BASE}/api/v1/fraud-detect/listings", json={
+        res = request_json("POST", f"{BASE}/api/v1/fraud-detect/listings", json={
             "user_id": f"U{i:03d}", "listing_title": c["title"], "price": c["price"],
             "description": c["desc"], "image_base64_list": [to_b64(img)],
         }, timeout=10)
-        res = r.json()
         iv = res['analysis_details']['image_validation']
         pv = res['analysis_details']['price_validation']
         l3 = res['analysis_details']['text_ai_analysis']
