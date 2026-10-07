@@ -1,0 +1,23 @@
+{
+  "n": 24,
+  "threshold": 80,
+  "TP": 11,
+  "TN": 9,
+  "FP": 3,
+  "FN": 1,
+  "precision": 78.6,
+  "recall": 91.7,
+  "f1": 0.846,
+  "accuracy": 83.3,
+  "specificity": 75.0,
+  "fpr": 25.0,
+  "fnr": 8.3,
+  "precision_ci": [
+    52.4,
+    92.4
+  ],
+  "recall_ci": [
+    64.6,
+    98.5
+  ]
+}
